@@ -1,0 +1,20 @@
+[project]
+name = "menu"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ldd", email = "1851622159@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "langchain>=1.4.4",
+    "langchain-openai>=1.7.0",
+]
+
+[project.scripts]
+menu = "menu:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
