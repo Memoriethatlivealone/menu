@@ -15,6 +15,7 @@ dependencies = [
     "pymilvus>=3.0.2",
     "pymysql>=1.2.3",
     "sqlalchemy>=2.1.4",
+    "uv>=0.13.1",
 ]
 
 [project.scripts]
