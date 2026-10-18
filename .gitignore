@@ -9,3 +9,5 @@ wheels/
 .venv
 .env
 menu.sql
+node_modules/
+__pycache__/
