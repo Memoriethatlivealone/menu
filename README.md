@@ -1,97 +1,331 @@
-# AiMenu 智能点餐系统 - 前端
+# AiMenu 智能点餐系统
 
-这是一个基于 Vue 3 + Element Plus 的智能点餐系统前端应用。
+AiMenu 是一个用于学习「LLM Agent + 餐厅业务工具 + Web 前后端」的智能点餐项目。前端使用 Vue 3 与 Element Plus；后端使用 FastAPI 提供 HTTP/SSE 接口；智能助手通过 LangGraph Agent 接收用户意图，并在需要时调用 MySQL、Milvus、地图 MCP 等工具。Redis 用于 FAQ 推荐，MySQL 保存菜单和预订数据。
 
-## 功能特性
+本文档同时作为项目导览：说明已跟踪文件的用途、主要调用关系、环境准备、启动步骤，以及建议的循序学习路径。文档以当前仓库代码为准；其中有些前端预留功能尚未由后端实现，会明确标注。
 
-- 🤖 **智能对话**: 与AI助手进行自然语言交流，获取菜品推荐
-- 🚚 **配送查询**: 检查指定地址是否在配送范围内
-- 🍽️ **菜品展示**: 浏览完整的菜品列表，包含详细信息
+## 项目当前能力与边界
 
-## 技术栈
+### 已实现的主要能力
 
-- **Vue 3**: 渐进式JavaScript框架
-- **Element Plus**: Vue 3 UI组件库
-- **Axios**: HTTP客户端
-- **Vite**: 前端构建工具
+- **工具型餐厅 Agent**：`agent/langchain_assistant.py` 使用 LangGraph 的 `create_react_agent` 创建 Agent。Agent 根据系统提示词和用户意图决定是否调用工具，而不只是将消息直接转发给模型。
+- **Agent 工具**：查询特色菜、按口味进行 Milvus 向量检索、创建餐厅预订，以及连接配置好的地图 MCP 工具。
+- **流式对话**：后端 `/chat` 以 SSE 返回文本片段，前端逐段显示回答。
+- **菜单与预订查询**：后端通过 MySQL 查询在售菜品和预订记录。
+- **FAQ 推荐**：后端从 Redis 读取 FAQ，并用 `SequenceMatcher` 与 Jaccard 字符集合相似度对问题排序。
+- **前端页面**：展示对话、FAQ 建议、菜单推荐高亮和预订记录。
 
-## 项目结构
+### 当前未完成或需要注意的部分
 
+- 前端 API 模块声明了 `POST /delivery`，但 `api/main.py` 没有配送路由；页面也没有实际展示配送查询表单，因此配送查询暂不可用。
+- 前端代码包含购物车及确认订单相关状态/函数，但模板没有对应交互，且后端没有订单接口；这不是完整的下单闭环。
+- `/health` 只返回服务存活信息，不检查 MySQL、Redis、模型 API、Milvus 或 MCP 是否可用。
+- Agent 是按需初始化的；未配置模型 API 时，聊天请求会失败，但菜单等不需要 Agent 的接口仍可单独运行（前提是数据库已配置）。
+- `agent/milvus_data_sync.py` 在模块加载时会直接调用同步函数，并先删除 `menu_items` collection。不要把它当作无副作用的普通导入操作；执行前确认连接目标和数据备份。
+- `agent/redis_demo.py` 导入时会执行 Redis 示例写入；不要在不需要演示时直接导入该模块。
+
+## 技术栈与请求流程
+
+| 层次 | 技术 | 主要位置 |
+| --- | --- | --- |
+| 浏览器 UI | Vue 3、Element Plus | `ui/src/app.vue`、`ui/src/main.js` |
+| 前端 API 与代理 | Axios、Fetch、Vite | `ui/src/api/index.js`、`ui/vite.config.js` |
+| HTTP 服务 | FastAPI、Starlette StreamingResponse | `api/main.py` |
+| Agent 编排 | LangChain、LangGraph | `agent/langchain_assistant.py` |
+| 结构化数据 | MySQL、SQLAlchemy、PyMySQL | `api/main.py`、`agent/langchain_assistant.py` |
+| FAQ | Redis | `api/main.py`、`agent/redis_data_sync.py` |
+| 向量检索 | Milvus、HuggingFace Embeddings、`bge-m3` | `agent/langchain_assistant.py`、`agent/milvus_data_sync.py` |
+| 外部工具 | LangChain MCP Adapters、地图 MCP | `agent/langchain_assistant.py` |
+| Python 项目管理 | Python 3.12+、uv | `pyproject.toml`、`uv.lock` |
+
+聊天主要调用链：
+
+```text
+ui/src/app.vue
+  └─ chatAPI.sendStreamMessage()                 ui/src/api/index.js
+      └─ POST /api/chat                           Vite 代理移除 /api
+          └─ POST /chat                           api/main.py
+              └─ assistant_query()                agent/langchain_assistant.py
+                  └─ create_agent()               LangGraph Agent
+                      ├─ LLM：OpenAI 兼容 API
+                      ├─ 工具：MySQL / Milvus
+                      └─ 工具：地图 MCP
+                  └─ SSE data: JSON 事件流返回前端
 ```
-ui/
-├── src/
-│   ├── api/           # API服务层
-│   ├── components/    # Vue组件
-│   ├── assets/        # 静态资源
-│   ├── App.vue        # 根组件
-│   └── main.js        # 应用入口
-├── package.json       # 项目配置
-├── vite.config.js     # Vite配置
-└── index.html         # HTML模板
+
+FAQ、菜单和预订信息是单独的 HTTP 请求，不需要经过 Agent：
+
+```text
+Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
+                                             ├─ Redis：FAQ
+                                             └─ MySQL：菜单、预订列表
 ```
 
-## 安装依赖
+## 项目文件导览
+
+以下清单逐一介绍 Git 跟踪的项目文件。`node_modules`、`.venv`、构建产物等被忽略的依赖或生成文件不属于源代码清单。
+
+### 仓库根目录
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `README.md` | 本文档。项目总览、文件索引、配置和学习路径的入口。建议先读“请求流程”和“学习路径”，再按模块阅读源文件。 |
+| `.gitignore` | Git 忽略规则，包括 Python 字节码、虚拟环境、`.env`、Node 依赖、构建输出和 `menu.sql`。密钥文件不应提交。 |
+| `.python-version` | 指定项目 Python 版本为 `3.12`，供 pyenv 等版本管理工具识别；`pyproject.toml` 也声明 Python `>=3.12`。 |
+| `pyproject.toml` | Python 项目元数据、Python 版本范围、运行依赖、`uv_build` 构建配置，以及 `menu = "menu:main"` 命令入口。注意该入口实际指向 `src/menu/__init__.py` 中的 `main()`，并不是 FastAPI 服务。 |
+| `uv.lock` | uv 生成的 Python 依赖锁文件，记录解析后的依赖版本与来源。日常安装优先使用 `uv sync`，不要手工编辑锁文件。 |
+| `package-lock.json` | 仓库根目录的 npm 锁文件。当前锁文件的 `packages` 为空，根目录没有对应的 `package.json`；前端实际使用的是 `ui/package.json` 与 `ui/package-lock.json`。 |
+| `run.py` | Python 命令入口示例，目前只打印 `Hello from menu!`，不启动 API 或 Agent。可作为学习 Python 包入口与脚本的最小示例。 |
+| `study.py` | 独立的模型/Agent 学习实验：通过 LangChain 初始化聊天模型、创建无工具 Agent 并流式打印结果。它不是应用后端启动入口，运行前需要检查其中的模型配置及本地环境变量。 |
+
+### 后端 API：`api/`
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `api/main.py` | FastAPI 应用和 HTTP 接口定义。包含 `/health`、`/chat`、`/faq/suggest`、`/reservation/list`、`/menu/list`；定义请求/响应数据模型；FAQ 在 Redis 中取数并排序，菜单和预订通过 SQLAlchemy 查询 MySQL。可从 `app = FastAPI()`、路由装饰器开始阅读。 |
+
+### Agent 与数据工具：`agent/`
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `agent/langchain_assistant.py` | Agent 主体。包含延迟初始化的 embedding、Milvus client、MySQL engine；定义 `search_main_dishes`、`user_flavor_search`、`make_reservation` 三个业务工具；`assistant_query()` 将 Agent 的消息转为 SSE；`create_agent()` 设置模型、工具、系统提示词、地图 MCP client 和内存 checkpointer。建议按“工具 → Agent 创建 → 流式调用”的顺序学习。 |
+| `agent/prompts/system_prompt.txt` | Agent 的系统提示词，定义助手角色、可回答范围、预订所需信息、二次确认要求和餐厅资料。Agent 的行为约束与业务规则主要从这里理解；提示词不能替代后端对输入、权限和数据的校验。 |
+| `agent/milvus_data_sync.py` | 将 MySQL 菜品转换为文本、计算 embedding 并写入 Milvus collection 的学习/初始化脚本。当前文件在模块末尾直接执行 `insert_data()`，且会先删除同名 collection 再重建，具有破坏性；务必先检查代码、目标环境和备份，不要在生产数据上试跑。 |
+| `agent/redis_data_sync.py` | 定义示例 FAQ 及 `sync_faq_items_to_redis()`，用 Redis Hash 保存问答、用 Set 索引 FAQ key，并通过 pipeline 批量写入。函数定义后不会自动调用；目前连接地址写死为 `redis://localhost:6379`，与 API 读取 `REDIS_URL` 的方式不同。 |
+| `agent/redis_demo.py` | Redis 命令教学示例，演示 String、Hash、Set 和 pipeline。文件末尾会立即执行 `redis_command_demo1()` 并写入示例 key；`redis_command_demo2()` 中还包含 30 秒等待。不要在只想导入函数时直接导入此模块。 |
+
+### Python 包：`src/`
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `src/menu/__init__.py` | `menu` 包入口，定义 `main()` 并打印示例文本。与 `pyproject.toml` 中的 `menu` 命令对应；不是 API 路由或 Agent 实现。 |
+| `src/.env` | 当前工作区中存在的本地环境文件，不在 Git 跟踪清单内；内容使用 `LLM_BASE_URL`、`LLM_API_KEY` 等名称，而应用代码实际读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等变量。并且后端明确从仓库根目录加载 `.env`，因此不要假定 `src/.env` 会被应用读取。建议在仓库根目录创建 `.env` 并按下方配置填写；不要提交密钥。 |
+
+### 前端：`ui/`
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `ui/package.json` | 前端项目定义。列出 Vue、Element Plus、Axios 和 Vite 依赖，以及 `dev`、`build`、`preview` 脚本。 |
+| `ui/package-lock.json` | 前端 npm 依赖锁文件。使用 `npm ci` 时根据该文件安装一致的依赖版本。 |
+| `ui/index.html` | Vite 的 HTML 入口，提供 `#app` 挂载节点并加载 `/src/main.js`。 |
+| `ui/vite.config.js` | 配置 Vue 插件、`@` 到 `src` 的别名、开发服务器端口 `3000` 和 API 代理。代理把 `/api/...` 转为后端 `http://127.0.0.1:8000/...`。 |
+| `ui/start.bat` | Windows 前端启动辅助脚本：检查 Node.js，缺少 `node_modules` 时运行 `npm install`，然后执行 `npm run dev`。日常可用 `npm ci` 获得锁文件指定的依赖版本。 |
+| `ui/readme.md` | 前端目录下的旧版说明文档，包含初始功能介绍。部分结构、接口和功能描述可能与当前代码不符；以本根目录 README、`ui/src` 和后端路由为准。 |
+| `ui/src/main.js` | Vue 应用入口：创建 App、注册 Element Plus、引入组件样式、设置 Vue 全局错误处理并挂载到 `#app`。 |
+| `ui/src/app.vue` | 主页面与交互逻辑。包括聊天记录、FAQ 建议、SSE 消费、推荐菜高亮、菜单与预订列表加载，以及若干尚未接入模板/后端的配送和购物车状态。模板、`setup()` 与样式均在同一文件中。阅读时可先查看 template 的页面区域，再跟进对应的 API 调用。 |
+| `ui/src/api/index.js` | 前端 API 封装。Axios 实例处理普通 JSON 请求；聊天流使用 Fetch 和 `ReadableStream` 解析 SSE；导出聊天、配送、菜单、FAQ、预订和健康检查方法。配送方法目前对应后端不存在的 `/delivery`，健康检查方法虽已声明，但页面没有调用。 |
+
+## 环境要求
+
+- Python **3.12 或更高版本**。
+- [uv](https://docs.astral.sh/uv/)；用于创建/同步 Python 依赖环境。
+- Node.js 与 npm；用于前端开发与构建。
+- 按使用功能准备服务：MySQL（菜单和预订）、Redis（FAQ）、Milvus（向量检索）、OpenAI 兼容模型 API（Agent 对话）。
+- Agent 的菜品语义检索需要本地 `models/bge-m3` 模型目录。
+
+不使用某项可选功能时，不一定要启动其服务。例如只调试前端构建，无需连接数据库；但菜单和预订查询必须有 MySQL，FAQ 推荐必须有 Redis，聊天需要模型 API，向量检索工具需要 Milvus 和 embedding 模型。
+
+## 环境变量配置
+
+后端通过 `load_dotenv()`/`load_dotenv(PROJECT_ROOT / ".env")` 加载环境变量。请在**仓库根目录**创建 `.env`，不要把真实密钥提交到 Git：
+
+```dotenv
+# OpenAI 兼容聊天模型：聊天 Agent 必需
+OPENAI_API_KEY=替换为你的密钥
+OPENAI_BASE_URL=https://你的模型服务地址/v1
+OPENAI_MODEL=qwen-plus
+
+# SQLAlchemy 主数据库：菜单、预订列表、预订写入
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USERNAME=你的数据库用户名
+MYSQL_PASSWORD=你的数据库密码
+MYSQL_DATABASE=menu
+
+# 特色菜工具使用的另一组连接变量
+MYSQL_BASE_HOST=127.0.0.1
+MYSQL_BASE_PORT=3306
+MYSQL_BASE_USER=你的数据库用户名
+MYSQL_BASE_PASSWORD=你的数据库密码
+
+# FAQ 推荐
+REDIS_URL=redis://localhost:6379/0
+
+# 菜品向量搜索
+MILVUS_URI=http://localhost:19530
+MILVUS_TOKEN=
+```
+
+配置与代码的对应关系：
+
+- Agent 初始化明确要求 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`；`OPENAI_MODEL` 默认值为 `qwen-plus`。使用的是 OpenAI 兼容接口，不代表只能连接某个特定模型服务商。
+- `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` 用于 SQLAlchemy engine。特色菜工具还单独读取 `MYSQL_BASE_HOST`、`MYSQL_BASE_PORT`、`MYSQL_BASE_USER`、`MYSQL_BASE_PASSWORD`，并将数据库名固定为 `menu`。
+- `REDIS_URL` 供 API 的 FAQ 查询使用；但 `agent/redis_data_sync.py` 和 `agent/redis_demo.py` 示例目前各自写有 localhost 连接地址。
+- `MILVUS_URI`、`MILVUS_TOKEN` 用于 Milvus client；`user_flavor_search` 加载 `models/bge-m3` 生成查询向量。
+- 地图 MCP SSE 地址目前直接写在 `agent/langchain_assistant.py`，不是从 `.env` 读取；部署或学习时要检查并替换成获准使用的服务地址。
+
+## 安装与启动
+
+### 1. 安装 Python 依赖
+
+从仓库根目录运行：
+
+```bash
+uv sync
+```
+
+### 2. 启动后端 API
+
+```bash
+uv run uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+- API 地址：<http://127.0.0.1:8000>
+- OpenAPI 文档：<http://127.0.0.1:8000/docs>
+- 存活检查：<http://127.0.0.1:8000/health>
+
+`/health` 成功只代表 FastAPI 进程响应，不代表其他依赖已经连通。
+
+### 3. 安装并启动前端
+
+打开另一个终端：
 
 ```bash
 cd ui
-npm install
-```
-
-## 运行项目
-
-### 开发模式
-```bash
+npm ci
 npm run dev
 ```
-访问: http://localhost:3000
 
-### 生产构建
-```bash
-npm run build
+浏览器访问 <http://localhost:3000>。Windows 也可在 `ui` 目录运行：
+
+```bat
+start.bat
 ```
 
-### 预览构建结果
+开发服务器代理规则在 `ui/vite.config.js`：前端请求 `/api/menu/list` 时，Vite 转发到 `http://127.0.0.1:8000/menu/list`。
+
+### 4. 构建和预览前端
+
+在 `ui` 目录执行：
+
 ```bash
+npm run build
 npm run preview
 ```
 
-## API对接
+`npm run build` 生成 `ui/dist/` 静态文件；`preview` 用于本地预览构建结果。实际部署需由 Web 服务器托管静态文件，并单独设置 API 转发。
 
-前端通过以下接口与后端通信：
+## 后端 API 清单
 
-1. **智能对话**: `POST /api/chat`
-2. **配送查询**: `POST /api/delivery`  
-3. **菜品列表**: `GET /api/menu/list`
+以下是 `api/main.py` 当前实际注册的路由。直接请求后端时路径不带 `/api`；从前端开发服务器调用时会带 `/api` 并由 Vite 移除此前缀。
 
-## 代理配置
+| 方法 | 路径 | 请求/响应说明 |
+| --- | --- | --- |
+| `GET` | `/health` | 返回 `{ "status": "ok", "service": "aimenu-api" }`；轻量存活检查。 |
+| `POST` | `/chat` | 请求 JSON：`{ "query": "..." }`；响应类型为 `text/event-stream`，每条 `data:` 包含 JSON，文本片段为 `type: token`，错误事件为 `type: error`。 |
+| `GET` | `/faq/suggest?query=...&limit=...` | 查询 FAQ 推荐；`limit` 默认 `1`，服务端限制在 `1` 到 `10`；响应含 `success`、原始查询和 `suggestions`。 |
+| `GET` | `/reservation/list` | 查询预订记录，返回 `reservations`、`count` 和状态消息。 |
+| `GET` | `/menu/list` | 查询可售菜品，返回 `menu_items`、`count` 和状态消息。 |
 
-开发环境下，Vite会将 `/api` 路径代理到 `http://localhost:8000`，确保后端服务在该地址运行。
+**并非现有后端路由的路径：** `ui/src/api/index.js` 中的 `POST /delivery` 目前会返回 404。前端也没有完整订单提交 API。
 
-## 使用说明
+## Agent 工作方式与工具说明
 
-### 智能对话
-1. 在文本框中输入需求，如"我想点一个不太辣的川菜"
-2. 点击"询问"按钮
-3. AI助手会分析需求并推荐合适的菜品
+`create_agent()` 创建 LangGraph ReAct Agent，核心不是预先写死“问题对应答案”，而是把可用工具和系统提示词提供给模型，让模型在对话中判断何时需要调用工具。工具结果再交回 Agent，由模型组织自然语言回复。
 
-### 配送查询
-1. 输入配送地址
-2. 选择出行方式（骑行/驾车/直线距离）
-3. 点击"查询配送范围"
-4. 系统会显示是否在配送范围内及距离信息
+| 工具 | 数据来源 | 用途与当前注意点 |
+| --- | --- | --- |
+| `search_main_dishes` | MySQL `menu.menu_items` | 查询 `is_featured=1` 的特色菜，并将字段整理成适合模型阅读的中文字典。 |
+| `user_flavor_search` | 本地 `bge-m3` + Milvus `menu_items` collection | 将用户口味描述转换为向量，再检索相似菜品文本。初始化模型/服务失败时工具会返回错误文本。 |
+| `make_reservation` | MySQL `reservation_order` | 把预订信息写入数据库。系统提示词要求信息齐全后先向用户二次确认；需要进一步学习时，应确认工具调用前的业务校验和写入边界。 |
+| 地图 MCP 工具 | `MultiServerMCPClient` 配置的 SSE 服务 | Agent 初始化时向远端 MCP 服务获取工具。依赖网络和该服务可用；当前 URL 写在代码中。 |
 
-### 菜品浏览
-1. 页面加载时自动获取菜品列表
-2. 可点击"刷新菜单"按钮重新加载
-3. 每个菜品显示名称、价格、描述、分类、辣度等信息
-4. 点击"点菜"按钮可以选择菜品（待实现）
+聊天请求到达后，`assistant_query()` 创建/复用 Agent，并用 LangGraph `astream(..., stream_mode="messages")` 获取消息；后端跳过工具消息，将文本片段包装为 SSE `data:` JSON；前端 `sendStreamMessage()` 读取响应流并把 token 追加到当前 assistant 消息。
 
-## 响应式设计
+## 数据服务初始化与安全提示
 
-项目支持响应式布局，在移动设备上会自动调整界面布局。
+- **MySQL**：需准备代码中使用的 `menu_items` 与 `reservation_order` 表结构和数据。仓库未跟踪 SQL 初始化文件（`.gitignore` 忽略 `menu.sql`），因此表结构需从项目已有数据库/独立资料获取，不能仅靠本 README 推断。
+- **Redis**：FAQ 推荐读取 `faq:all_items` 集合及其引用的 Hash。`agent/redis_data_sync.py` 提供示例 FAQ 和同步函数，但尚未提供命令行入口；需在开发环境显式调用函数。
+- **Milvus**：向量数据同步脚本包含删除并重建 `menu_items` collection 的逻辑，而且文件加载时自动执行。务必先审阅并修改脚本的副作用与连接配置，确认非生产环境和备份后再执行。
+- **密钥与数据库凭证**：只放在未跟踪的本地 `.env` 或安全的部署密钥管理中，不要写入 README、提交记录、日志或公开 issue。
+- **用户输入和 Agent 工具**：Prompt 约束是行为指引，不是访问控制。面向真实业务部署前，应补充身份认证、授权、输入验证、预订确认的服务端校验、敏感信息处理、超时和可观测性。
 
-## 注意事项
+## 建议学习路径
 
-1. 确保后端API服务在 `http://localhost:8000` 运行
-2. 如需修改后端地址，请编辑 `vite.config.js` 中的代理配置
-3. 所有API请求都有超时处理和错误提示 
+按以下顺序从“能运行”逐步走到“理解 Agent 与数据流”。每一步都可以单独验证，不建议一开始同时排查所有外部依赖。
+
+### 第 1 阶段：认识项目与启动前端
+
+1. 阅读本 README 的“项目文件导览”和“请求流程”。
+2. 先查看 `ui/package.json`、`ui/index.html`、`ui/src/main.js`，理解 npm 脚本、HTML 挂载点和 Vue 启动过程。
+3. 阅读 `ui/src/app.vue` 的 template，标出聊天、FAQ、菜单、预订区域；暂时跳过较长的 CSS。
+4. 在 `ui` 下运行 `npm ci`、`npm run dev`。前端需要 API 才能填充业务数据，但构建本身可先通过 `npm run build` 检查。
+5. 读 `ui/vite.config.js`，理解 `/api` 代理与浏览器同源请求的关系。
+
+**阶段目标：** 能说明浏览器如何加载 Vue 页面，且理解前端端口 `3000` 与后端端口 `8000` 的关系。
+
+### 第 2 阶段：理解普通 HTTP API 与数据库
+
+1. 阅读 `api/main.py` 的 Pydantic 响应模型和路由，先看 `/health`，再看 `/menu/list` 与 `/reservation/list`。
+2. 阅读 `ui/src/api/index.js` 中 Axios 拦截器及 `menuAPI`、`reservationAPI`。
+3. 回到 `ui/src/app.vue`，跟踪 `onMounted()`、`loadMenuItems()`、`loadReservations()` 如何请求并更新 Vue `ref` 状态。
+4. 配置本地 MySQL 和根目录 `.env` 后访问 `/docs` 或 `/menu/list`。如果暂时没有数据库，可以先理解查询与错误响应，不要把服务暂不可用误认为路由未启动。
+
+**阶段目标：** 能从页面加载追踪到 FastAPI 路由、SQL 查询和 JSON 响应，再说明数据如何呈现。
+
+### 第 3 阶段：掌握 Redis FAQ 推荐
+
+1. 阅读 `agent/redis_data_sync.py`，理解 Hash 保存问答、Set 保存 FAQ key、pipeline 批量写入。
+2. 阅读 `api/main.py` 的 `_get_redis_client()`、`_load_faq_items_from_redis()`、`_get_similarity_score()` 和 `/faq/suggest`。
+3. 阅读 `ui/src/api/index.js` 的 `faqAPI`，再读 `ui/src/app.vue` 的输入监听、去抖计时器和建议点击处理。
+4. 用独立开发 Redis 验证数据结构。不要直接运行有导入副作用的示例模块；先检查它执行什么命令。
+
+**阶段目标：** 理解用户输入经过 debounce、HTTP 请求、Redis 读取、相似度排序后如何成为可点击建议。
+
+### 第 4 阶段：学习流式 Agent 与工具调用
+
+1. 先读 `agent/prompts/system_prompt.txt`，提炼角色、约束和预订信息收集步骤。
+2. 在 `agent/langchain_assistant.py` 阅读三个业务工具及其入参/返回值，留意它们各自依赖的数据库或向量服务。
+3. 阅读 `create_agent()`，识别模型、工具列表、MCP client、prompt 和 checkpointer 分别注入到 Agent 的位置。
+4. 阅读 `assistant_query()`，理解一次用户输入如何进入 `astream()`，以及工具消息为什么不作为普通文本返回。
+5. 对照 `api/main.py` 的 `/chat` 与 `ui/src/api/index.js` 的 `sendStreamMessage()`，从服务端生成器一直追踪到浏览器的流式响应解析。
+6. 配好模型 API 后先问无需外部查询的餐厅问题，再试特色菜/预订等工具场景；查看后端日志确认是否调用工具。Milvus 和地图 MCP 可作为后续独立依赖接入。
+
+**阶段目标：** 能区分“LLM 生成文本”和“Agent 决定调用工具”，并解释 SSE 如何把模型输出逐段送到 UI。
+
+### 第 5 阶段：数据同步、脚本与工程化
+
+1. 阅读 `agent/milvus_data_sync.py` 的 MySQL 数据读取、文本拼装、embedding、schema/index 创建和插入流程；先做代码审阅，不要直接执行会删除 collection 的脚本。
+2. 阅读 `agent/redis_demo.py` 与 `study.py`，把它们当作实验脚本，辨认模块级执行、副作用和外部服务依赖。
+3. 阅读 `pyproject.toml`、`uv.lock`、`.python-version`，理解 Python 版本、声明式依赖和锁文件的职责；用 `uv sync` 还原环境。
+4. 对比根目录 `package-lock.json` 与 `ui/package-lock.json`，理解前端工作区实际位于 `ui/`。
+5. 评估尚未实现的功能：配送路由、订单 API、输入/权限校验、错误提示和自动化测试。每次补功能时同步更新 API 文档与测试。
+
+**阶段目标：** 能安全地描述数据导入副作用，并区分应用入口、实验脚本、锁文件和真正的服务启动命令。
+
+## 常见问题排查
+
+| 现象 | 检查方向 |
+| --- | --- |
+| 页面打开但菜单为空 | 确认后端已启动、Vite 代理目标正确、根目录 `.env` 的 MySQL 配置有效且 `menu_items` 表可读。 |
+| FAQ 建议为空 | 确认 Redis 正常、`REDIS_URL` 正确，且 `faq:all_items` 和对应 FAQ Hash 已写入。Redis 故障时 API 会返回空建议。 |
+| 聊天立即报错或返回助手不可用 | 检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、模型名和网络连接；如果 Agent 初始化地图 MCP 失败，也需检查 MCP 服务。查看后端终端输出。 |
+| 菜品口味向量搜索失败 | 检查 `models/bge-m3`、`MILVUS_URI`、`MILVUS_TOKEN`、Milvus 服务和 collection/schema 是否匹配。 |
+| `/delivery` 404 | 这是当前实现状态：后端没有配送路由，前端 API 声明不能代表服务端已经实现。 |
+| `uv run menu` 只打印一句话 | 这是 `src/menu/__init__.py` 的预期行为；它不是 FastAPI 启动命令。请用本文中的 Uvicorn 命令启动 API。 |
+| `.env` 修改后仍读不到 | 确认文件位于仓库根目录，变量名与代码读取名称一致；当前 `src/.env` 中的 `LLM_*` 变量并不匹配应用代码使用的 `OPENAI_*` 名称。 |
+
+## 测试与项目状态
+
+当前仓库未定义自动化测试脚本，也没有跟踪的测试目录。可先执行以下基础验证：
+
+```bash
+# 仓库根目录：确认 Python 依赖环境
+uv sync
+
+# ui 目录：检查前端依赖与生产构建
+npm ci
+npm run build
+```
+
+运行业务接口还需要相应外部服务和数据。不要把“前端构建成功”或 `/health` 返回成功等同于 Agent、数据库和所有业务流程已经通过集成测试。
