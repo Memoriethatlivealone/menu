@@ -945,14 +945,17 @@ name = "menu"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "fastapi" },
     { name = "langchain" },
     { name = "langchain-huggingface" },
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "mysql" },
+    { name = "openai" },
     { name = "pymilvus" },
     { name = "pymysql" },
+    { name = "python-dotenv" },
     { name = "redis" },
     { name = "sqlalchemy" },
     { name = "starlette" },
@@ -961,14 +964,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2026.7.22" },
     { name = "fastapi", specifier = ">=0.143.3" },
     { name = "langchain", specifier = ">=1.4.4" },
     { name = "langchain-huggingface", specifier = ">=1.2.3" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.2" },
     { name = "langchain-openai", specifier = ">=1.7.0" },
     { name = "mysql", specifier = ">=0.0.3" },
+    { name = "openai", specifier = ">=3.29.0" },
     { name = "pymilvus", specifier = ">=3.0.2" },
     { name = "pymysql", specifier = ">=1.2.3" },
+    { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "redis", specifier = ">=8.1.0" },
     { name = "sqlalchemy", specifier = ">=2.1.4" },
     { name = "starlette", specifier = ">=1.8.0" },

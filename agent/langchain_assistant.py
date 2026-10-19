@@ -1,17 +1,87 @@
 from langchain.tools import tool
-import pymysql
 import os
 from dotenv import load_dotenv
 from pathlib import Path
-from pymysql.cursors import DictCursor
 from sqlalchemy import text
+from sqlalchemy.engine import URL
+import logging
 
-load_dotenv()
-root_path = Path(__file__).parent.parent
+logger = logging.getLogger(__name__)
+
+root_path = Path(__file__).resolve().parent.parent
+load_dotenv(root_path / ".env")
 embeddings = None
 milvus_client = None
 engine = None
 agent = None
+model_http_client = None
+model_async_http_client = None
+
+
+class AssistantConfigurationError(RuntimeError):
+    pass
+
+
+def create_chat_model():
+    import ssl
+    import certifi
+    from openai import DefaultHttpxClient, DefaultAsyncHttpxClient
+    from langchain_openai import ChatOpenAI
+
+    global model_http_client, model_async_http_client
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL")
+    if not api_key or not base_url:
+        raise AssistantConfigurationError("请在项目根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_BASE_URL，然后重启后端。")
+
+    # Explicit CA roots avoid the Windows truststore crash without disabling TLS verification.
+    context = ssl.create_default_context(cafile=certifi.where())
+    if model_http_client is None:
+        model_http_client = DefaultHttpxClient(verify=context, timeout=30)
+    if model_async_http_client is None:
+        model_async_http_client = DefaultAsyncHttpxClient(verify=context, timeout=30)
+    return ChatOpenAI(
+        model=os.getenv("OPENAI_MODEL") or "claude-sonnet-5",
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.7,
+        timeout=30,
+        max_retries=1,
+        http_socket_options=(),
+        http_client=model_http_client,
+        http_async_client=model_async_http_client,
+    )
+
+
+async def close_model_clients():
+    global model_http_client, model_async_http_client, agent
+    agent = None
+    if model_async_http_client is not None:
+        await model_async_http_client.aclose()
+        model_async_http_client = None
+    if model_http_client is not None:
+        model_http_client.close()
+        model_http_client = None
+
+
+def assistant_error_message(exc):
+    from openai import APIConnectionError, APITimeoutError, APIStatusError
+
+    if isinstance(exc, AssistantConfigurationError):
+        return "聊天配置不完整，请在项目根目录 .env 配置 OPENAI_API_KEY 和 OPENAI_BASE_URL，然后重启后端。"
+    if isinstance(exc, APITimeoutError):
+        return "模型服务响应超时，请稍后重试或检查网络连接。"
+    if isinstance(exc, APIConnectionError):
+        return "无法连接模型服务，请检查 OPENAI_BASE_URL、网络代理和 HTTPS 证书配置。"
+    if isinstance(exc, APIStatusError):
+        if exc.status_code in (401, 403):
+            return "模型服务鉴权失败或无访问权限，请检查 OPENAI_API_KEY 和账号权限。"
+        if exc.status_code == 429:
+            return "模型服务限流或额度不足，请检查账号额度后重试。"
+        if exc.status_code in (400, 404):
+            return "模型服务不支持当前请求，请检查 OPENAI_MODEL、OPENAI_BASE_URL 及工具调用支持情况。"
+        return "模型服务返回异常，请稍后重试并查看后端日志。"
+    return "助手处理失败，请查看后端日志中的具体原因。"
 
 
 def get_embeddings():
@@ -19,7 +89,10 @@ def get_embeddings():
     if embeddings is None:
         from langchain_huggingface import HuggingFaceEmbeddings
 
-        embeddings = HuggingFaceEmbeddings(model=str(root_path / "models" / "bge-m3"))
+        model_path = root_path / "models" / "bge-m3"
+        if not model_path.is_dir():
+            raise RuntimeError(f"口味检索模型不存在：{model_path}，请先配置 models/bge-m3")
+        embeddings = HuggingFaceEmbeddings(model_name=str(model_path))
     return embeddings
 
 
@@ -39,10 +112,15 @@ def mysql_connection():
     if engine is None:
         from sqlalchemy import create_engine
 
-        engine = create_engine(
-            url=f"mysql+pymysql://{os.getenv('MYSQL_USERNAME')}:{os.getenv('MYSQL_PASSWORD')}@{os.getenv('MYSQL_HOST')}:{os.getenv('MYSQL_PORT')}/{os.getenv('MYSQL_DATABASE')}",
-            pool_size=15,
+        url = URL.create(
+            "mysql+pymysql",
+            username=os.getenv("MYSQL_USERNAME"),
+            password=os.getenv("MYSQL_PASSWORD"),
+            host=os.getenv("MYSQL_HOST"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            database=os.getenv("MYSQL_DATABASE"),
         )
+        engine = create_engine(url, pool_size=15, pool_pre_ping=True)
     return engine
 
 
@@ -67,85 +145,77 @@ def search_main_dishes():
         "allergens": "过敏信息",
     }
     try:
-        with pymysql.connect(
-            host=os.getenv("MYSQL_BASE_HOST"),
-            user=os.getenv("MYSQL_BASE_USER"),
-            password=os.getenv("MYSQL_BASE_PASSWORD"),
-            port=int(os.getenv("MYSQL_BASE_PORT")),
-            database="menu",
-        ) as conn:
-            with conn.cursor(DictCursor) as cursor:
-                sql = """
-                    select
-                        dish_name,
-                        price,
-                        description,
-                        category,
-                        spice_level,
-                        flavor,
-                        main_ingredients,
-                        cooking_method,
-                        is_vegetarian,
-                        allergens
-                    from
-                        menu_items
-                    where
-                        is_featured=1
-                """
-                cursor.execute(sql)
-                results = cursor.fetchall()
-                # 定义json的键，将数据封装成json
+        from sqlalchemy import inspect
 
-                json_results = []
-                for item in results:
-                    json_item = {}
-                    for key, value in item.items():
-                        json_item[key_name_mapping[key]] = value
-                    json_results.append(json_item)
+        engine = mysql_connection()
+        columns = {column["name"] for column in inspect(engine).get_columns("menu_items")}
+        featured_filter = "is_featured = 1 AND " if "is_featured" in columns else ""
+        with engine.connect() as conn:
+            results = conn.execute(text(f"""
+                SELECT dish_name, price, description, category, spice_level,
+                       flavor, main_ingredients, cooking_method, is_vegetarian, allergens
+                FROM menu_items
+                WHERE {featured_filter}is_available = 1
+            """)).mappings().all()
+        return [
+            {label: str(item[key]) if item[key] is not None else ""
+             for key, label in key_name_mapping.items()}
+            for item in results
+        ]
+    except Exception:
+        logger.exception("查询特色菜失败")
+        return "查询菜品时发生错误，请检查数据库连接及菜单表结构。"
 
-                return json_results
-    except Exception as e:
-        return f"查询菜品时发生错误: {str(e)}"
+
+def load_available_menu():
+    """向量服务不可用时，提供实际在售菜单供助手按口味筛选。"""
+    try:
+        with mysql_connection().connect() as conn:
+            results = conn.execute(text("""
+                SELECT id, dish_name, price, description, category, spice_level,
+                       flavor, main_ingredients, cooking_method, is_vegetarian, allergens
+                FROM menu_items
+                WHERE is_available = 1
+                ORDER BY category, dish_name
+            """)).mappings().all()
+        items = [{**dict(item), "price": str(item["price"])} for item in results]
+        return {
+            "source": "mysql",
+            "instruction": "这是当前在售菜单，请根据用户需求筛选；spice_level=0 表示不辣，不要捏造菜品或价格。",
+            "menu_items": items,
+            "message": "success" if items else "当前暂无在售菜品。",
+        }
+    except Exception:
+        logger.exception("查询在售菜单失败")
+        return {"source": "mysql", "menu_items": [], "error": "菜单数据库暂不可用，请检查数据库连接。"}
 
 
 @tool
 def user_flavor_search(user_query: str):
-    """
-    基于用户的口味，来去查找相关的菜品
-    使用向量搜索在Milvus数据库中查找与用户口味描述最匹配的菜品
-    """
-    try:
-        # 1、构建用户query的向量
-        embeddings = get_embeddings()
-        query_vector = embeddings.embed_query(user_query)
-
-        # 2、连接milvus，进行向量搜索
-        client = get_milvus_client()
-
-        # 3、进行向量搜索
-        search_res = client.search(
-            collection_name="menu_items",
-            data=[query_vector],
-            anns_field="vector",
-            output_fields=["text"],
-            limit=1,
-        )
-        print("当前查找结果为：", search_res)
-        # 4、解析搜索结果
-        if search_res:
-            all_results = search_res[0]
-            # all_results: 列表
-            final_result = []
-
-            for item in all_results:
-                item_str = item["entity"]["text"]
-                final_result.append(item_str)
-
-            return final_result
-        else:
-            return "在当前库里面没有找到和用户喜好相关的菜品"
-    except Exception as e:
-        return f"搜索菜品时发生错误: {str(e)}"
+    """查询菜单或按口味推荐菜品；优先向量检索，未配置或失败时读取 MySQL 在售菜单。"""
+    uri = os.getenv("MILVUS_URI") or ""
+    vector_configured = (
+        (root_path / "models" / "bge-m3").is_dir()
+        and bool(uri)
+        and "{" not in uri
+        and "}" not in uri
+    )
+    if vector_configured:
+        try:
+            query_vector = get_embeddings().embed_query(user_query)
+            search_res = get_milvus_client().search(
+                collection_name="menu_items",
+                data=[query_vector],
+                anns_field="vector",
+                output_fields=["text"],
+                limit=5,
+                timeout=5,
+            )
+            if search_res and search_res[0]:
+                return {"source": "milvus", "results": [item["entity"]["text"] for item in search_res[0]]}
+        except Exception:
+            logger.warning("向量检索不可用，改用 MySQL 菜单", exc_info=True)
+    return load_available_menu()
 
 
 from pydantic import BaseModel, Field
@@ -244,57 +314,41 @@ async def assistant_query(user_query: str):
     except Exception as exc:
         import json
 
-        error_payload = {"type": "error", "error": "助手暂时无法响应，请稍后重试。"}
-        print(f"assistant stream failed: {exc}")
+        error_payload = {"type": "error", "error": assistant_error_message(exc)}
+        logger.exception("assistant stream failed")
         yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
 
 
 async def create_agent():
     global agent
     if agent is None:
-        from pathlib import Path
         from langgraph.prebuilt import create_react_agent
-        from langchain_openai import ChatOpenAI
-        from langchain_mcp_adapters.client import MultiServerMCPClient
         from langgraph.checkpoint.memory import MemorySaver
 
-        checkpointer = MemorySaver()
-
-        client = MultiServerMCPClient(
-            connections={
-                "amap_map": {
-                    "transport": "sse",
-                    "url": "https://mcp.api-inference.modelscope.net/ccaef2a2308042/sse",
-                }
-            }
-        )
-
-        # OpenAI-compatible provider configuration must be explicit so the
-        # service does not accidentally use a different shell environment.
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_BASE_URL")
-        if not api_key or not base_url:
-            raise RuntimeError("OPENAI_API_KEY and OPENAI_BASE_URL must be configured")
-
-        llm = ChatOpenAI(
-            model=os.getenv("OPENAI_MODEL", "qwen-plus"),
-            api_key=api_key,
-            base_url=base_url,
-            temperature=0.7,
-        )
-        with open(
-            str(root_path / "agent" / "prompts" / "system_prompt.txt"),
-            encoding="utf-8",
-            mode="r",
-        ) as f:
+        llm = create_chat_model()
+        with open(root_path / "agent" / "prompts" / "system_prompt.txt", encoding="utf-8") as f:
             system_prompt = f.read()
-        mcp_tools = await client.get_tools()
+
+        tools = [search_main_dishes, user_flavor_search, make_reservation]
+        mcp_url = os.getenv("AMAP_MCP_URL")
+        if mcp_url:
+            try:
+                from langchain_mcp_adapters.client import MultiServerMCPClient
+
+                client = MultiServerMCPClient(
+                    connections={"amap_map": {"transport": "sse", "url": mcp_url}}
+                )
+                import asyncio
+
+                tools += await asyncio.wait_for(client.get_tools(), timeout=5)
+            except Exception:
+                logger.warning("地图 MCP 不可用，继续使用本地工具", exc_info=True)
+
         agent = create_react_agent(
             model=llm,
-            tools=[search_main_dishes, user_flavor_search, make_reservation]
-            + mcp_tools,
+            tools=tools,
             prompt=system_prompt,
-            checkpointer=checkpointer,
+            checkpointer=MemorySaver(),
         )
     return agent
 

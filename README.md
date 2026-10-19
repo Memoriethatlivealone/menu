@@ -76,6 +76,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 | `uv.lock` | uv 生成的 Python 依赖锁文件，记录解析后的依赖版本与来源。日常安装优先使用 `uv sync`，不要手工编辑锁文件。 |
 | `package-lock.json` | 仓库根目录的 npm 锁文件。当前锁文件的 `packages` 为空，根目录没有对应的 `package.json`；前端实际使用的是 `ui/package.json` 与 `ui/package-lock.json`。 |
 | `run.py` | Python 命令入口示例，目前只打印 `Hello from menu!`，不启动 API 或 Agent。可作为学习 Python 包入口与脚本的最小示例。 |
+| `init_db.py` | 非破坏性本地 MySQL 初始化：创建缺失的业务表/特色菜字段；仅当菜单表为空时写入明确标记的演示菜品；不会删除或改写现有菜品，也不写入预订。运行前确认 `.env` 指向本地开发数据库。 |
 | `study.py` | 独立的模型/Agent 学习实验：通过 LangChain 初始化聊天模型、创建无工具 Agent 并流式打印结果。它不是应用后端启动入口，运行前需要检查其中的模型配置及本地环境变量。 |
 
 ### 后端 API：`api/`
@@ -108,7 +109,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 | `ui/package.json` | 前端项目定义。列出 Vue、Element Plus、Axios 和 Vite 依赖，以及 `dev`、`build`、`preview` 脚本。 |
 | `ui/package-lock.json` | 前端 npm 依赖锁文件。使用 `npm ci` 时根据该文件安装一致的依赖版本。 |
 | `ui/index.html` | Vite 的 HTML 入口，提供 `#app` 挂载节点并加载 `/src/main.js`。 |
-| `ui/vite.config.js` | 配置 Vue 插件、`@` 到 `src` 的别名、开发服务器端口 `3000` 和 API 代理。代理把 `/api/...` 转为后端 `http://127.0.0.1:8000/...`。 |
+| `ui/vite.config.js` | 配置 Vue 插件、`@` 到 `src` 的别名、开发服务器端口 `3000` 和 API 代理。代理把 `/api/...` 转为本机后端（当前本地配置为 `http://127.0.0.1:8010`）。 |
 | `ui/start.bat` | Windows 前端启动辅助脚本：检查 Node.js，缺少 `node_modules` 时运行 `npm install`，然后执行 `npm run dev`。日常可用 `npm ci` 获得锁文件指定的依赖版本。 |
 | `ui/readme.md` | 前端目录下的旧版说明文档，包含初始功能介绍。部分结构、接口和功能描述可能与当前代码不符；以本根目录 README、`ui/src` 和后端路由为准。 |
 | `ui/src/main.js` | Vue 应用入口：创建 App、注册 Element Plus、引入组件样式、设置 Vue 全局错误处理并挂载到 `#app`。 |
@@ -133,7 +134,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 # OpenAI 兼容聊天模型：聊天 Agent 必需
 OPENAI_API_KEY=替换为你的密钥
 OPENAI_BASE_URL=https://你的模型服务地址/v1
-OPENAI_MODEL=qwen-plus
+OPENAI_MODEL=claude-sonnet-5  # 示例；必须替换为该 API 账号可用的模型 ID
 
 # SQLAlchemy 主数据库：菜单、预订列表、预订写入
 MYSQL_HOST=127.0.0.1
@@ -141,12 +142,6 @@ MYSQL_PORT=3306
 MYSQL_USERNAME=你的数据库用户名
 MYSQL_PASSWORD=你的数据库密码
 MYSQL_DATABASE=menu
-
-# 特色菜工具使用的另一组连接变量
-MYSQL_BASE_HOST=127.0.0.1
-MYSQL_BASE_PORT=3306
-MYSQL_BASE_USER=你的数据库用户名
-MYSQL_BASE_PASSWORD=你的数据库密码
 
 # FAQ 推荐
 REDIS_URL=redis://localhost:6379/0
@@ -158,11 +153,11 @@ MILVUS_TOKEN=
 
 配置与代码的对应关系：
 
-- Agent 初始化明确要求 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`；`OPENAI_MODEL` 默认值为 `qwen-plus`。使用的是 OpenAI 兼容接口，不代表只能连接某个特定模型服务商。
-- `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` 用于 SQLAlchemy engine。特色菜工具还单独读取 `MYSQL_BASE_HOST`、`MYSQL_BASE_PORT`、`MYSQL_BASE_USER`、`MYSQL_BASE_PASSWORD`，并将数据库名固定为 `menu`。
+- Agent 初始化明确要求 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`；`OPENAI_MODEL` 未设置时默认使用 `claude-sonnet-5`。模型名称必须是当前 API 账号可用的模型 ID；使用 OpenAI 兼容接口，不代表只能连接特定模型服务商。
+- `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` 用于 SQLAlchemy engine；特色菜和口味推荐工具复用同一数据库连接，无需另外配置 `MYSQL_BASE_*`。
 - `REDIS_URL` 供 API 的 FAQ 查询使用；但 `agent/redis_data_sync.py` 和 `agent/redis_demo.py` 示例目前各自写有 localhost 连接地址。
-- `MILVUS_URI`、`MILVUS_TOKEN` 用于 Milvus client；`user_flavor_search` 加载 `models/bge-m3` 生成查询向量。
-- 地图 MCP SSE 地址目前直接写在 `agent/langchain_assistant.py`，不是从 `.env` 读取；部署或学习时要检查并替换成获准使用的服务地址。
+- `MILVUS_URI`、`MILVUS_TOKEN` 与本地 `models/bge-m3` 用于可选向量检索。未配置、结果为空或检索失败时，口味推荐读取 MySQL 在售菜单供助手筛选；基础推荐无需先安装 embedding 模型或配置 Milvus。
+- 地图 MCP 为可选功能，通过 `.env` 的 `AMAP_MCP_URL` 配置获准使用的 SSE 地址；不设置就不加载，连接失败不会阻止本地工具使用。
 
 ## 安装与启动
 
@@ -174,19 +169,33 @@ MILVUS_TOKEN=
 uv sync
 ```
 
-### 2. 启动后端 API
+### 2. 初始化本地 MySQL（仅首次需要）
+
+确认仓库根目录 `.env` 指向本地开发数据库，然后运行：
 
 ```bash
-uv run uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+uv run python init_db.py
 ```
 
-- API 地址：<http://127.0.0.1:8000>
-- OpenAPI 文档：<http://127.0.0.1:8000/docs>
-- 存活检查：<http://127.0.0.1:8000/health>
+脚本不会删除表或已有数据，只在菜单为空时添加明确标注的演示菜品；预订表保持不变。不要在生产数据库运行演示初始化。
 
-`/health` 成功只代表 FastAPI 进程响应，不代表其他依赖已经连通。
+### 3. 启动后端 API
 
-### 3. 安装并启动前端
+```bash
+uv run uvicorn api.main:app --reload --host 127.0.0.1 --port 8010
+```
+
+- API 地址：<http://127.0.0.1:8010>
+- OpenAPI 文档：<http://127.0.0.1:8010/docs>
+- 存活检查：<http://127.0.0.1:8010/health>
+
+`/health` 成功只代表 FastAPI 进程响应，不代表其他依赖已经连通。聊天状态标签在首次请求前显示“待验证”，请求时显示“响应中”，成功收到模型文本并结束后显示“可用”，失败显示“异常”。
+
+基础验收：先问“你们几点营业？”，再问“你们有哪些特色菜？”、“推荐几个不辣的菜”。菜单记录既用于右侧展示，也供助手查询真实菜名、价格、口味和过敏原；仅插入数据不会修复模型服务连接。用户只说“点菜”时助手会先询问需求，不会自动创建预订或声称完成真实订单。
+
+模型连接使用 certifi CA 根证书并保持 HTTPS 证书及主机名校验，避免 Windows truststore 证书链处理异常。鉴权、网络、超时和模型名错误会返回安全提示，详细异常见后端终端；修改 `.env` 后重启后端。
+
+### 4. 安装并启动前端
 
 打开另一个终端：
 
@@ -196,15 +205,15 @@ npm ci
 npm run dev
 ```
 
-浏览器访问 <http://localhost:3000>。Windows 也可在 `ui` 目录运行：
+浏览器访问 Vite 终端输出的 Local 地址。默认是 <http://localhost:3000>；端口被占用时会自动递增（例如 `http://localhost:3002`）。不要反复启动多个前后端进程；当前代理连接的是 8010 后端。Windows 也可在 `ui` 目录运行：
 
 ```bat
 start.bat
 ```
 
-开发服务器代理规则在 `ui/vite.config.js`：前端请求 `/api/menu/list` 时，Vite 转发到 `http://127.0.0.1:8000/menu/list`。
+开发服务器代理规则在 `ui/vite.config.js`：前端请求 `/api/menu/list` 时，Vite 转发到 `http://127.0.0.1:8010/menu/list`。
 
-### 4. 构建和预览前端
+### 5. 构建和预览前端
 
 在 `ui` 目录执行：
 
@@ -235,10 +244,10 @@ npm run preview
 
 | 工具 | 数据来源 | 用途与当前注意点 |
 | --- | --- | --- |
-| `search_main_dishes` | MySQL `menu.menu_items` | 查询 `is_featured=1` 的特色菜，并将字段整理成适合模型阅读的中文字典。 |
-| `user_flavor_search` | 本地 `bge-m3` + Milvus `menu_items` collection | 将用户口味描述转换为向量，再检索相似菜品文本。初始化模型/服务失败时工具会返回错误文本。 |
+| `search_main_dishes` | MySQL 当前配置数据库中的 `menu_items` 表 | 如果表有 `is_featured` 字段，则查询特色可售菜；旧表缺少该字段时回退为查询所有可售菜。 |
+| `user_flavor_search` | MySQL 在售菜单；可选本地 `bge-m3` + Milvus | 已配置时优先向量检索；未配置、失败或无结果时回退到真实在售菜单，助手根据辣度、食材等筛选，不捏造菜品。 |
 | `make_reservation` | MySQL `reservation_order` | 把预订信息写入数据库。系统提示词要求信息齐全后先向用户二次确认；需要进一步学习时，应确认工具调用前的业务校验和写入边界。 |
-| 地图 MCP 工具 | `MultiServerMCPClient` 配置的 SSE 服务 | Agent 初始化时向远端 MCP 服务获取工具。依赖网络和该服务可用；当前 URL 写在代码中。 |
+| 地图 MCP 工具 | `AMAP_MCP_URL` 指定的 SSE 服务 | 配置后按需加载远端地图工具；未配置或连接失败不阻塞基础聊天。 |
 
 聊天请求到达后，`assistant_query()` 创建/复用 Agent，并用 LangGraph `astream(..., stream_mode="messages")` 获取消息；后端跳过工具消息，将文本片段包装为 SSE `data:` JSON；前端 `sendStreamMessage()` 读取响应流并把 token 追加到当前 assistant 消息。
 
@@ -262,7 +271,7 @@ npm run preview
 4. 在 `ui` 下运行 `npm ci`、`npm run dev`。前端需要 API 才能填充业务数据，但构建本身可先通过 `npm run build` 检查。
 5. 读 `ui/vite.config.js`，理解 `/api` 代理与浏览器同源请求的关系。
 
-**阶段目标：** 能说明浏览器如何加载 Vue 页面，且理解前端端口 `3000` 与后端端口 `8000` 的关系。
+**阶段目标：** 能说明浏览器如何加载 Vue 页面，且理解前端端口 `3000` 与后端端口 `8010` 的关系。
 
 ### 第 2 阶段：理解普通 HTTP API 与数据库
 
@@ -309,15 +318,21 @@ npm run preview
 | --- | --- |
 | 页面打开但菜单为空 | 确认后端已启动、Vite 代理目标正确、根目录 `.env` 的 MySQL 配置有效且 `menu_items` 表可读。 |
 | FAQ 建议为空 | 确认 Redis 正常、`REDIS_URL` 正确，且 `faq:all_items` 和对应 FAQ Hash 已写入。Redis 故障时 API 会返回空建议。 |
-| 聊天立即报错或返回助手不可用 | 检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、模型名和网络连接；如果 Agent 初始化地图 MCP 失败，也需检查 MCP 服务。查看后端终端输出。 |
-| 菜品口味向量搜索失败 | 检查 `models/bge-m3`、`MILVUS_URI`、`MILVUS_TOKEN`、Milvus 服务和 collection/schema 是否匹配。 |
+| 聊天报错或超时 | 根据页面错误检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`、账号权限/额度及网络。查看后端异常；确认重启的是代理连接的 8010 服务，不是其他端口的旧进程。 |
+| 菜品口味向量搜索失败 | 基础推荐会回退到 MySQL，先确认菜单可读；如需启用向量搜索，再配置 `models/bge-m3`、Milvus 服务和匹配的 collection。 |
 | `/delivery` 404 | 这是当前实现状态：后端没有配送路由，前端 API 声明不能代表服务端已经实现。 |
 | `uv run menu` 只打印一句话 | 这是 `src/menu/__init__.py` 的预期行为；它不是 FastAPI 启动命令。请用本文中的 Uvicorn 命令启动 API。 |
 | `.env` 修改后仍读不到 | 确认文件位于仓库根目录，变量名与代码读取名称一致；当前 `src/.env` 中的 `LLM_*` 变量并不匹配应用代码使用的 `OPENAI_*` 名称。 |
 
 ## 测试与项目状态
 
-当前仓库未定义自动化测试脚本，也没有跟踪的测试目录。可先执行以下基础验证：
+已提供不调用外部模型、不写入真实数据库的连接与推荐回归测试：
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+另外可执行以下基础验证：
 
 ```bash
 # 仓库根目录：确认 Python 依赖环境

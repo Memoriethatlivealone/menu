@@ -16,7 +16,7 @@
               <template #header>
                 <div class="card-header">
                   <span>💬 智能对话</span>
-                  <el-tag size="small" type="success">在线</el-tag>
+                  <el-tag size="small" :type="chatStatus.type">{{ chatStatus.label }}</el-tag>
                 </div>
               </template>
               
@@ -206,6 +206,13 @@ export default {
     const chatQuery = ref('')
     const chatMessages = ref([])
     const chatLoading = ref(false)
+    const chatState = ref('unknown')
+    const chatStatus = computed(() => ({
+      unknown: { label: '待验证', type: 'info' },
+      pending: { label: '响应中', type: 'warning' },
+      ready: { label: '可用', type: 'success' },
+      error: { label: '异常', type: 'danger' }
+    }[chatState.value]))
     const chatHistoryRef = ref(null)
     const faqSuggestions = ref([])
     const faqSuggestLoading = ref(false)
@@ -344,9 +351,12 @@ export default {
       chatMessages.value.push({ role: 'user', content: query })
       chatQuery.value = ''
       chatLoading.value = true
+      chatState.value = 'pending'
       scrollToBottom()
 
       let hasCreatedMessage = false
+      let receivedToken = false
+      let streamFailed = false
 
       await chatAPI.sendStreamMessage(
         query,
@@ -379,8 +389,8 @@ export default {
           const err = data?.type === 'error' ? data?.error : data?.error
 
           if (token) {
+            receivedToken = true
             if (!hasCreatedMessage) {
-              chatLoading.value = false
               chatMessages.value.push({ role: 'assistant', content: '' })
               hasCreatedMessage = true
             }
@@ -391,6 +401,8 @@ export default {
           }
 
           if (err) {
+            streamFailed = true
+            chatState.value = 'error'
             if (!hasCreatedMessage) {
               chatLoading.value = false
               chatMessages.value.push({ role: 'assistant', content: '' })
@@ -402,6 +414,8 @@ export default {
         },
         (error) => {
           console.error('Chat error:', error)
+          streamFailed = true
+          chatState.value = 'error'
           chatLoading.value = false
 
           if (!hasCreatedMessage) {
@@ -413,6 +427,10 @@ export default {
         },
         () => {
           chatLoading.value = false
+          chatState.value = !streamFailed && receivedToken ? 'ready' : 'error'
+          if (!hasCreatedMessage) {
+            chatMessages.value.push({ role: 'assistant', content: '[未收到有效回答，请重试或查看后端日志。]' })
+          }
           scrollToBottom()
         }
       )
@@ -581,6 +599,7 @@ export default {
       chatQuery,
       chatMessages,
       chatLoading,
+      chatStatus,
       chatHistoryRef,
       sendChatQuery,
       quickAsk,

@@ -10,7 +10,7 @@ from pathlib import Path
 # Resolve imports and environment variables from the repository, not the cwd.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from agent.langchain_assistant import assistant_query,mysql_connection
+from agent.langchain_assistant import assistant_query,mysql_connection,close_model_clients
 # 引入StreamingResponse，用于发送事件流：EventStream
 from starlette.responses import StreamingResponse
 from difflib import SequenceMatcher
@@ -21,8 +21,19 @@ from typing import Optional,List
 from datetime import datetime
 load_dotenv(PROJECT_ROOT / ".env")
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        yield
+    finally:
+        await close_model_clients()
+
+
 # 2、创建一个application 简称app
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 client = None
 # 3、配置app的路由映射函数：每一个端点所对应的处理函数
 
