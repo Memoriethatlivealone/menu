@@ -39,6 +39,21 @@ class ModelClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(assistant.model_http_client)
             self.assertIsNone(assistant.model_async_http_client)
 
+    async def test_deepseek_uses_non_thinking_tool_mode(self):
+        for base_url, expected in (
+            ("https://api.deepseek.com", {"thinking": {"type": "disabled"}}),
+            ("https://example.invalid/v1", None),
+        ):
+            with self.subTest(base_url=base_url), patch.dict(os.environ, {
+                "OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": base_url,
+                "OPENAI_MODEL": "deepseek-flash",
+            }), patch.object(assistant, "model_http_client", MagicMock()), patch.object(
+                assistant, "model_async_http_client", MagicMock()
+            ), patch("langchain_openai.ChatOpenAI") as model_factory:
+                assistant.create_chat_model()
+                self.assertEqual(model_factory.call_args.kwargs["model"], "deepseek-flash")
+                self.assertEqual(model_factory.call_args.kwargs.get("extra_body"), expected)
+
     async def test_missing_configuration(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""}):
             with self.assertRaises(assistant.AssistantConfigurationError):

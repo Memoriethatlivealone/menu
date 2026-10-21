@@ -21,7 +21,7 @@ model_async_http_client = None
 class AssistantConfigurationError(RuntimeError):
     pass
 
-
+None
 def create_chat_model():
     import ssl
     import certifi
@@ -40,8 +40,14 @@ def create_chat_model():
         model_http_client = DefaultHttpxClient(verify=context, timeout=30)
     if model_async_http_client is None:
         model_async_http_client = DefaultAsyncHttpxClient(verify=context, timeout=30)
+    from urllib.parse import urlsplit
+
+    model_options = {}
+    if urlsplit(base_url).hostname == "api.deepseek.com":
+        # This generic tool loop does not replay DeepSeek reasoning_content.
+        model_options["extra_body"] = {"thinking": {"type": "disabled"}}
     return ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL") or "claude-sonnet-5",
+        model=os.getenv("OPENAI_MODEL") or "deepseek-flash",
         api_key=api_key,
         base_url=base_url,
         temperature=0.7,
@@ -50,6 +56,7 @@ def create_chat_model():
         http_socket_options=(),
         http_client=model_http_client,
         http_async_client=model_async_http_client,
+        **model_options,
     )
 
 
