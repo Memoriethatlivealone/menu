@@ -21,7 +21,7 @@ model_async_http_client = None
 class AssistantConfigurationError(RuntimeError):
     pass
 
-None
+
 def create_chat_model():
     import ssl
     import certifi

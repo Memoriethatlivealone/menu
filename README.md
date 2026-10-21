@@ -1,6 +1,6 @@
 # AiMenu 智能点餐系统
 
-AiMenu 是一个用于学习「LLM Agent + 餐厅业务工具 + Web 前后端」的智能点餐项目。前端使用 Vue 3 与 Element Plus；后端使用 FastAPI 提供 HTTP/SSE 接口；智能助手通过 LangGraph Agent 接收用户意图，并在需要时调用 MySQL、Milvus、地图 MCP 等工具。Redis 用于 FAQ 推荐，MySQL 保存菜单和预订数据。
+AiMenu 是一个用于学习「LLM Agent + 餐厅业务工具 + Web 前后端」的智能点餐项目。前端使用 Vue 3 与 Element Plus，是带真实菜品图片、分类导航、搜索、购物车和本地订单记录的完整点餐界面；后端使用 FastAPI 提供 HTTP/SSE 接口；智能助手通过 LangGraph Agent（默认模型 `deepseek-flash`，可经 `OPENAI_MODEL` 更换）接收用户意图，并在需要时调用 MySQL、Milvus、地图 MCP 等工具。Redis 用于 FAQ 推荐，MySQL 保存菜单和预订数据。仓库另附 `study/` 目录，提供 Agent 学习指南网页与详细教程 PDF。
 
 本文档同时作为项目导览：说明已跟踪文件的用途、主要调用关系、环境准备、启动步骤，以及建议的循序学习路径。文档以当前仓库代码为准；其中有些前端预留功能尚未由后端实现，会明确标注。
 
@@ -13,12 +13,12 @@ AiMenu 是一个用于学习「LLM Agent + 餐厅业务工具 + Web 前后端」
 - **流式对话**：后端 `/chat` 以 SSE 返回文本片段，前端逐段显示回答。
 - **菜单与预订查询**：后端通过 MySQL 查询在售菜品和预订记录。
 - **FAQ 推荐**：后端从 Redis 读取 FAQ，并用 `SequenceMatcher` 与 Jaccard 字符集合相似度对问题排序。
-- **前端页面**：展示对话、FAQ 建议、菜单推荐高亮和预订记录。
+- **前端页面**：新版完整点餐界面——顶部品牌栏（菜品搜索、我的订单/我的预订/AI 助手入口）、左侧常驻 AI 对话面板（快捷提问、FAQ 联想、流式回答、推荐菜高亮）、右侧分类导航与菜品卡片（真实图片、辣度/素食/分类标签）、底部购物车结算栏及订单/预订抽屉。
 
 ### 当前未完成或需要注意的部分
 
-- 前端 API 模块声明了 `POST /delivery`，但 `api/main.py` 没有配送路由；页面也没有实际展示配送查询表单，因此配送查询暂不可用。
-- 前端代码包含购物车及确认订单相关状态/函数，但模板没有对应交互，且后端没有订单接口；这不是完整的下单闭环。
+- 前端 API 模块声明了 `POST /delivery`，但 `api/main.py` 没有配送路由；`app.vue` 中的 `checkDelivery()` 也没有接入任何模板入口，因此配送查询暂不可用。
+- 购物车下单只是**前端演示闭环**：确认订单后生成订单号并保存到浏览器 localStorage（key 为 `aimenu_orders`），可在「我的订单」抽屉查看历史；后端没有订单接口，订单不会写入 MySQL，换浏览器或清缓存即丢失。
 - `/health` 只返回服务存活信息，不检查 MySQL、Redis、模型 API、Milvus 或 MCP 是否可用。
 - Agent 是按需初始化的；未配置模型 API 时，聊天请求会失败，但菜单等不需要 Agent 的接口仍可单独运行（前提是数据库已配置）。
 - `agent/milvus_data_sync.py` 在模块加载时会直接调用同步函数，并先删除 `menu_items` collection。不要把它当作无副作用的普通导入操作；执行前确认连接目标和数据备份。
@@ -77,7 +77,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 | `package-lock.json` | 仓库根目录的 npm 锁文件。当前锁文件的 `packages` 为空，根目录没有对应的 `package.json`；前端实际使用的是 `ui/package.json` 与 `ui/package-lock.json`。 |
 | `run.py` | Python 命令入口示例，目前只打印 `Hello from menu!`，不启动 API 或 Agent。可作为学习 Python 包入口与脚本的最小示例。 |
 | `init_db.py` | 非破坏性本地 MySQL 初始化：创建缺失的业务表/特色菜字段；仅当菜单表为空时写入明确标记的演示菜品；不会删除或改写现有菜品，也不写入预订。运行前确认 `.env` 指向本地开发数据库。 |
-| `study.py` | 独立的模型/Agent 学习实验：通过 LangChain 初始化聊天模型、创建无工具 Agent 并流式打印结果。它不是应用后端启动入口，运行前需要检查其中的模型配置及本地环境变量。 |
+| `study.py` | 独立的模型/Agent 学习实验：通过 LangChain 初始化聊天模型、创建无工具 Agent 并流式打印结果。它不是应用后端启动入口，运行前需要检查其中的模型配置及本地环境变量。配套阅读资料见 `study/` 目录。 |
 
 ### 后端 API：`api/`
 
@@ -89,7 +89,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 
 | 文件 | 作用与阅读提示 |
 | --- | --- |
-| `agent/langchain_assistant.py` | Agent 主体。包含延迟初始化的 embedding、Milvus client、MySQL engine；定义 `search_main_dishes`、`user_flavor_search`、`make_reservation` 三个业务工具；`assistant_query()` 将 Agent 的消息转为 SSE；`create_agent()` 设置模型、工具、系统提示词、地图 MCP client 和内存 checkpointer。建议按“工具 → Agent 创建 → 流式调用”的顺序学习。 |
+| `agent/langchain_assistant.py` | Agent 主体。包含延迟初始化的 embedding、Milvus client、MySQL engine；定义 `search_main_dishes`、`user_flavor_search`、`make_reservation` 三个业务工具；`assistant_query()` 将 Agent 的消息转为 SSE；`create_agent()` 设置模型、工具、系统提示词、地图 MCP client 和内存 checkpointer。`create_chat_model()` 默认使用 `deepseek-flash`，并在 `OPENAI_BASE_URL` 主机为 `api.deepseek.com` 时自动附加 `extra_body={"thinking": {"type": "disabled"}}` 关闭思考模式（通用工具循环不回放 reasoning_content）。建议按“工具 → Agent 创建 → 流式调用”的顺序学习。 |
 | `agent/prompts/system_prompt.txt` | Agent 的系统提示词，定义助手角色、可回答范围、预订所需信息、二次确认要求和餐厅资料。Agent 的行为约束与业务规则主要从这里理解；提示词不能替代后端对输入、权限和数据的校验。 |
 | `agent/milvus_data_sync.py` | 将 MySQL 菜品转换为文本、计算 embedding 并写入 Milvus collection 的学习/初始化脚本。当前文件在模块末尾直接执行 `insert_data()`，且会先删除同名 collection 再重建，具有破坏性；务必先检查代码、目标环境和备份，不要在生产数据上试跑。 |
 | `agent/redis_data_sync.py` | 定义示例 FAQ 及 `sync_faq_items_to_redis()`，用 Redis Hash 保存问答、用 Set 索引 FAQ key，并通过 pipeline 批量写入。函数定义后不会自动调用；目前连接地址写死为 `redis://localhost:6379`，与 API 读取 `REDIS_URL` 的方式不同。 |
@@ -102,19 +102,28 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 | `src/menu/__init__.py` | `menu` 包入口，定义 `main()` 并打印示例文本。与 `pyproject.toml` 中的 `menu` 命令对应；不是 API 路由或 Agent 实现。 |
 | `src/.env` | 当前工作区中存在的本地环境文件，不在 Git 跟踪清单内；内容使用 `LLM_BASE_URL`、`LLM_API_KEY` 等名称，而应用代码实际读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 等变量。并且后端明确从仓库根目录加载 `.env`，因此不要假定 `src/.env` 会被应用读取。建议在仓库根目录创建 `.env` 并按下方配置填写；不要提交密钥。 |
 
+### 学习资料与测试：`study/`、`tests/`
+
+| 文件 | 作用与阅读提示 |
+| --- | --- |
+| `study/agent-learning-guide.html` | Agent 学习指南网页版，浏览器直接打开即可阅读；与本文“建议学习路径”互补，侧重 Agent 原理与本项目代码的对照讲解。 |
+| `study/详细教程.pdf` | 项目详细教程 PDF（约 3 MB），适合离线系统学习。 |
+| `tests/test_assistant.py` | 后端 Agent 单元测试：不调用外部模型、不写真实数据库。覆盖模型客户端 TLS/关闭行为、DeepSeek 非思考模式参数、配置缺失报错、菜单查询与向量检索回退、SSE 流式输出与错误脱敏。用 `uv run python -m unittest discover -s tests -v` 运行。 |
+
 ### 前端：`ui/`
 
 | 文件 | 作用与阅读提示 |
 | --- | --- |
 | `ui/package.json` | 前端项目定义。列出 Vue、Element Plus、Axios 和 Vite 依赖，以及 `dev`、`build`、`preview` 脚本。 |
 | `ui/package-lock.json` | 前端 npm 依赖锁文件。使用 `npm ci` 时根据该文件安装一致的依赖版本。 |
-| `ui/index.html` | Vite 的 HTML 入口，提供 `#app` 挂载节点并加载 `/src/main.js`。 |
+| `ui/index.html` | Vite 的 HTML 入口，提供 `#app` 挂载节点并加载 `/src/main.js`；内置 🍽️ emoji 图标、主题色 `#FFD100` 和标题「智能点餐助手 - AI 智能点餐系统」。 |
+| `ui/public/dishes/*.jpg` | 16 张菜品实拍图（宫保鸡丁、番茄炒蛋、炒饭、酸辣汤等）及 `default.jpg` 兜底图。`app.vue` 按菜名关键词映射到对应图片；Vite 构建时原样复制到 `dist/`。 |
 | `ui/vite.config.js` | 配置 Vue 插件、`@` 到 `src` 的别名、开发服务器端口 `3000` 和 API 代理。代理把 `/api/...` 转为本机后端（当前本地配置为 `http://127.0.0.1:8010`）。 |
 | `ui/start.bat` | Windows 前端启动辅助脚本：检查 Node.js，缺少 `node_modules` 时运行 `npm install`，然后执行 `npm run dev`。日常可用 `npm ci` 获得锁文件指定的依赖版本。 |
 | `ui/readme.md` | 前端目录下的旧版说明文档，包含初始功能介绍。部分结构、接口和功能描述可能与当前代码不符；以本根目录 README、`ui/src` 和后端路由为准。 |
 | `ui/src/main.js` | Vue 应用入口：创建 App、注册 Element Plus、引入组件样式、设置 Vue 全局错误处理并挂载到 `#app`。 |
-| `ui/src/app.vue` | 主页面与交互逻辑。包括聊天记录、FAQ 建议、SSE 消费、推荐菜高亮、菜单与预订列表加载，以及若干尚未接入模板/后端的配送和购物车状态。模板、`setup()` 与样式均在同一文件中。阅读时可先查看 template 的页面区域，再跟进对应的 API 调用。 |
-| `ui/src/api/index.js` | 前端 API 封装。Axios 实例处理普通 JSON 请求；聊天流使用 Fetch 和 `ReadableStream` 解析 SSE；导出聊天、配送、菜单、FAQ、预订和健康检查方法。配送方法目前对应后端不存在的 `/delivery`，健康检查方法虽已声明，但页面没有调用。 |
+| `ui/src/app.vue` | 主页面与交互逻辑（约 2800 行，已随“更换前端”重写）。分区：顶部品牌栏（搜索框、我的订单/我的预订/AI 助手按钮）、店铺信息条、左侧常驻 AI 对话面板（快捷提问 chips、FAQ 联想、SSE 流式消费、推荐菜高亮）、右侧分类导航 + 菜品卡片（真实图片、辣度/素食/分类标签、加购按钮）、底部购物车结算栏，以及购物车/确认订单/下单成功/我的订单/我的预订等抽屉与弹窗。下单为前端演示闭环，订单存 localStorage。模板、`setup()` 与样式均在同一文件中；阅读时可先按 template 的分区注释浏览页面结构，再跟进对应函数。 |
+| `ui/src/api/index.js` | 前端 API 封装。Axios 实例处理普通 JSON 请求；聊天流使用 Fetch 和 `ReadableStream` 解析 SSE；导出聊天、配送、菜单、FAQ、预订和健康检查方法。配送方法对应后端不存在的 `/delivery`（调用会 404），且页面尚无配送表单入口；健康检查方法虽已声明，但页面没有调用。 |
 
 ## 环境要求
 
@@ -134,7 +143,7 @@ Vue 页面 → ui/src/api/index.js → Vite /api 代理 → FastAPI 路由
 # OpenAI 兼容聊天模型：聊天 Agent 必需
 OPENAI_API_KEY=替换为你的密钥
 OPENAI_BASE_URL=https://你的模型服务地址/v1
-OPENAI_MODEL=claude-sonnet-5  # 示例；必须替换为该 API 账号可用的模型 ID
+OPENAI_MODEL=deepseek-flash  # 示例；必须替换为该 API 账号可用的模型 ID
 
 # SQLAlchemy 主数据库：菜单、预订列表、预订写入
 MYSQL_HOST=127.0.0.1
@@ -153,7 +162,7 @@ MILVUS_TOKEN=
 
 配置与代码的对应关系：
 
-- Agent 初始化明确要求 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`；`OPENAI_MODEL` 未设置时默认使用 `claude-sonnet-5`。模型名称必须是当前 API 账号可用的模型 ID；使用 OpenAI 兼容接口，不代表只能连接特定模型服务商。
+- Agent 初始化明确要求 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`；`OPENAI_MODEL` 未设置时默认使用 `deepseek-flash`。模型名称必须是当前 API 账号可用的模型 ID；使用 OpenAI 兼容接口，不代表只能连接特定模型服务商。当 `OPENAI_BASE_URL` 的主机为 `api.deepseek.com` 时，模型客户端会自动附加 `extra_body={"thinking": {"type": "disabled"}}` 关闭 DeepSeek 思考模式（当前通用工具循环不回放 reasoning_content）；连接其他服务商时不附加该参数。
 - `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USERNAME`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` 用于 SQLAlchemy engine；特色菜和口味推荐工具复用同一数据库连接，无需另外配置 `MYSQL_BASE_*`。
 - `REDIS_URL` 供 API 的 FAQ 查询使用；但 `agent/redis_data_sync.py` 和 `agent/redis_demo.py` 示例目前各自写有 localhost 连接地址。
 - `MILVUS_URI`、`MILVUS_TOKEN` 与本地 `models/bge-m3` 用于可选向量检索。未配置、结果为空或检索失败时，口味推荐读取 MySQL 在售菜单供助手筛选；基础推荐无需先安装 embedding 模型或配置 Milvus。
@@ -267,7 +276,7 @@ npm run preview
 
 1. 阅读本 README 的“项目文件导览”和“请求流程”。
 2. 先查看 `ui/package.json`、`ui/index.html`、`ui/src/main.js`，理解 npm 脚本、HTML 挂载点和 Vue 启动过程。
-3. 阅读 `ui/src/app.vue` 的 template，标出聊天、FAQ、菜单、预订区域；暂时跳过较长的 CSS。
+3. 阅读 `ui/src/app.vue` 的 template，按分区注释标出品牌栏、AI 对话面板、分类导航与菜品卡片、购物车结算栏和各抽屉/弹窗；暂时跳过较长的 CSS。
 4. 在 `ui` 下运行 `npm ci`、`npm run dev`。前端需要 API 才能填充业务数据，但构建本身可先通过 `npm run build` 检查。
 5. 读 `ui/vite.config.js`，理解 `/api` 代理与浏览器同源请求的关系。
 
@@ -277,7 +286,7 @@ npm run preview
 
 1. 阅读 `api/main.py` 的 Pydantic 响应模型和路由，先看 `/health`，再看 `/menu/list` 与 `/reservation/list`。
 2. 阅读 `ui/src/api/index.js` 中 Axios 拦截器及 `menuAPI`、`reservationAPI`。
-3. 回到 `ui/src/app.vue`，跟踪 `onMounted()`、`loadMenuItems()`、`loadReservations()` 如何请求并更新 Vue `ref` 状态。
+3. 回到 `ui/src/app.vue`，跟踪 `onMounted()`、`loadMenuItems()`、`loadReservations()` 如何请求并更新 Vue `ref` 状态，以及菜品图片如何按名称关键词映射到 `ui/public/dishes/`。
 4. 配置本地 MySQL 和根目录 `.env` 后访问 `/docs` 或 `/menu/list`。如果暂时没有数据库，可以先理解查询与错误响应，不要把服务暂不可用误认为路由未启动。
 
 **阶段目标：** 能从页面加载追踪到 FastAPI 路由、SQL 查询和 JSON 响应，再说明数据如何呈现。
